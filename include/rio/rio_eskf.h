@@ -12,14 +12,10 @@ struct ImuSample {
 };
 
 struct RadarDoppler {
+  float t;
   Vec3  u_R;
   float vr;
   float sigma;
-};
-
-struct RadarVel3 {
-  Vec3 v_R;
-  Vec3 sigma;
 };
 
 struct Params {
@@ -33,19 +29,26 @@ struct Params {
   float tau_bg = -1.0f;
   float tau_ba = -1.0f;
 
-  Quat q_RB = Quat::Identity();
-  Vec3 p_BR_B = Vec3::Zero();
+  Quat q_IR = Quat::Identity();
+  Vec3 p_IR = Vec3::Zero();
 
   float min_dt = 1e-4f;
   float max_dt = 0.05f;
+
+  float sigma_vr = 0.1f;
+  bool  gating_enable = true;
+  float gate_nsigma = 3.0f;
+  float vr_sign = -1.0f;
 };
 
 struct NominalState {
-  Vec3 p_WB = Vec3::Zero();
-  Vec3 v_WB = Vec3::Zero();
-  Quat q_WB = Quat::Identity();
+  Vec3 p_WI = Vec3::Zero();
+  Vec3 v_WI = Vec3::Zero();
   Vec3 b_a  = Vec3::Zero();
+  Quat q_WI = Quat::Identity();
   Vec3 b_g  = Vec3::Zero();
+  Vec3 p_IR = Vec3::Zero();
+  Quat q_IR = Quat::Identity();
 };
 
 // Error-state ordering:
@@ -59,26 +62,36 @@ public:
   void setParams(const Params& p);
   bool paramsSet() const;
 
-  void reset(const NominalState& x0, const float* P0_diag_15, float t0);
+  void reset(const NominalState& x0, const float* P0_diag_21, float t0);
 
   bool isInitialized() const;
   float lastTime() const;
 
-  const NominalState& state() const;
-  const Mat15& covariance() const;
+  const NominalState& getState() const;
+  const Mat21& getCovariance() const;
 
-  void propagate(const ImuSample& s);
-  void updateDoppler(const RadarDoppler* meas, size_t n);
-  void updateDopplerWithOmega(const RadarDoppler* meas, size_t n, const Vec3& omega_B);
-  void updateRadarVelocity3(const RadarVel3& z);
+  void predict(const ImuSample& s, float dt);
+  void insPropagation(const ImuSample& s, float dt);
+  void correct(const RadarDoppler* meas, size_t n, const Vec3& w_nom);
+  void updateStateEstimate(const Vec21& delta_x);
+  void advancePriorToPosteriror();
 
 private:
-  void scalarUpdate_(const Row15& H, float residual, float R);
-  void inject_(const Vec15& dx);
+  void scalarCorrect_(const Row21& H, float residual, float R);
+  Row21 computeRadarH_(const Vec3& mu_r, const Vec3& w_nom) const;
+  float computeRadarh_(const Vec3& mu_r, const Vec3& w_nom) const;
+
+  const Mat21 generateA(Vec3 f_nom, Vec3 w_nom) const;
+  const Mat21x12 generateE() const;
 
   Params params_{};
   NominalState x_{};
-  Mat15 P_{Mat15::Zero()};
+  Mat12 Q_{Mat12::Zero()};
+
+  Vec21 delta_x_hat_{Vec21::Zero()};
+  Vec21 delta_x_hat_prior_{Vec21::Zero()};
+  Mat21 P_hat_{Mat21::Zero()};
+  Mat21 P_hat_prior_{Mat21::Zero()};
 
   bool params_set_{false};
   bool initialized_{false};

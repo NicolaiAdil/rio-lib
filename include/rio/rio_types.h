@@ -12,9 +12,16 @@ using Vec3  = Eigen::Matrix<float, 3, 1>;
 using Mat3  = Eigen::Matrix<float, 3, 3>;
 using Quat  = Eigen::Quaternionf;
 
-using Vec15 = Eigen::Matrix<float, 15, 1>;
-using Mat15 = Eigen::Matrix<float, 15, 15>;
-using Row15 = Eigen::Matrix<float, 1, 15>;
+using Mat12 = Eigen::Matrix<float, 12, 12>;
+
+using Vec21 = Eigen::Matrix<float, 21, 1>;
+using Mat21 = Eigen::Matrix<float, 21, 21>;
+using Row21 = Eigen::Matrix<float, 1, 21>;
+using Mat21x12 = Eigen::Matrix<float, 21, 12>;
+
+using Vec23 = Eigen::Matrix<float, 23, 1>;
+using Mat23 = Eigen::Matrix<float, 23, 23>;
+using Row23 = Eigen::Matrix<float, 1, 23>;
 
 inline float clampf(float x, float lo, float hi) {
   return (x < lo) ? lo : (x > hi) ? hi : x;
