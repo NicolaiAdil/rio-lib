@@ -51,6 +51,13 @@ struct NominalState {
   Quat q_IR = Quat::Identity();
 };
 
+struct CorrectionResult {
+  size_t n_total    = 0;   // measurements received
+  size_t n_accepted = 0;   // passed gating and used for update
+  size_t n_rejected = 0;   // failed gating (chi² too large)
+  size_t n_skipped  = 0;   // skipped (zero-norm direction, S<=0, etc.)
+};
+
 // Error-state ordering:
 // δx = [ δp^n, δv^n, δb_acc^b, δθ_nb, δb_ars^b ]^T
 class RioEskf {
@@ -72,7 +79,7 @@ public:
 
   void predict(const ImuSample& s, float dt);
   void insPropagation(const ImuSample& s, float dt);
-  void correct(const RadarDoppler* meas, size_t n, const Vec3& w_nom);
+  CorrectionResult correct(const RadarDoppler* meas, size_t n, const Vec3& w_nom);
   void updateStateEstimate(const Vec21& delta_x);
   void advancePriorToPosteriror();
 

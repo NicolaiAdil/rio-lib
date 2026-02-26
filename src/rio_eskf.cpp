@@ -110,8 +110,11 @@ void RioEskf::insPropagation(const ImuSample& s, float dt) {
   // Biases and extrinsics are unchanged (no propagation)
 }
 
-void RioEskf::correct(const RadarDoppler* meas, size_t n, const Vec3& w_nom) {
-  if (!params_set_ || !initialized_ || !meas || n == 0) return;
+CorrectionResult RioEskf::correct(const RadarDoppler* meas, size_t n, const Vec3& w_nom) {
+  CorrectionResult res;
+  res.n_total = n;
+
+  if (!params_set_ || !initialized_ || !meas || n == 0) return res;
 
   const float R_meas = params_.sigma_vr * params_.sigma_vr;
   const float gate_thresh = params_.gate_nsigma * params_.gate_nsigma;
@@ -121,7 +124,7 @@ void RioEskf::correct(const RadarDoppler* meas, size_t n, const Vec3& w_nom) {
   for (size_t i = 0; i < n; ++i) {
     Vec3 mu_r = meas[i].u_R;
     const float un = mu_r.norm();
-    if (un < 1e-6f) continue;
+    if (un < 1e-6f) { res.n_skipped++; continue; }
     mu_r /= un;
 
     // Compute H (1x21) and h (predicted vr)
@@ -134,9 +137,9 @@ void RioEskf::correct(const RadarDoppler* meas, size_t n, const Vec3& w_nom) {
     // Gating
     if (params_.gating_enable) {
       const float S = (H * P_hat_prior_ * H.transpose())(0, 0) + R_meas;
-      if (S <= 0.0f) continue;
+      if (S <= 0.0f) { res.n_skipped++; continue; }
       const float gamma = e * e / S;
-      if (gamma > gate_thresh) continue;
+      if (gamma > gate_thresh) { res.n_rejected++; continue; }
     }
 
     // Scalar Kalman correction (Joseph form)
@@ -145,6 +148,7 @@ void RioEskf::correct(const RadarDoppler* meas, size_t n, const Vec3& w_nom) {
     // Inject into nominal state
     updateStateEstimate(delta_x_hat_);
 
+    res.n_accepted++;
     any_update = true;
 
     // Carry posterior into prior for next measurement in this batch
@@ -156,6 +160,8 @@ void RioEskf::correct(const RadarDoppler* meas, size_t n, const Vec3& w_nom) {
     P_hat_       = P_hat_prior_;
     delta_x_hat_ = delta_x_hat_prior_;
   }
+
+  return res;
 }
 
 void RioEskf::scalarCorrect_(const Row21& H, float residual, float R) {
