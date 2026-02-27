@@ -71,6 +71,15 @@ public:
 
   void reset(const NominalState& x0, const float* P0_diag_21, float t0);
 
+  /// Attempt to initialize attitude from a gravity-aligned accelerometer reading.
+  /// @param f_b       Specific-force measurement in body frame (m/s²).
+  /// @param P0_diag   Pointer to 21-element initial covariance diagonal.
+  /// @param t0        Timestamp to seed the filter with.
+  /// @param g_tol     Allowed deviation of |f_b| from |g_W| (m/s²).  Default 0.8.
+  /// @return true if |f_b| was close enough to gravity and the filter was reset.
+  bool initAttitudeFromGravity(const Vec3& f_b, const float* P0_diag, float t0,
+                               float g_tol = 0.8f);
+
   bool isInitialized() const;
   float lastTime() const;
 
@@ -79,9 +88,9 @@ public:
 
   void predict(const ImuSample& s, float dt);
   void insPropagation(const ImuSample& s, float dt);
-  CorrectionResult correct(const RadarDoppler* meas, size_t n, const Vec3& w_nom);
+  CorrectionResult correct(const RadarDoppler* meas, size_t n, const ImuSample& s);
   void updateStateEstimate(const Vec21& delta_x);
-  void advancePriorToPosteriror();
+  void advancePriorToPosterior();
 
 private:
   void scalarCorrect_(const Row21& H, float residual, float R);

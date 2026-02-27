@@ -46,6 +46,45 @@ void RioEskf::reset(const NominalState& x0, const float* P0_diag_21, float t0) {
   t_last_ = t0;
 }
 
+bool RioEskf::initAttitudeFromGravity(const Vec3& f_b, const float* P0_diag,
+                                       float t0, float g_tol) {
+  if (!params_set_) return false;
+
+  const float g_mag = params_.g_W.norm();        // expected ~9.81
+  const float fn    = f_b.norm();
+
+  // Reject if |f_b| is too far from expected gravity magnitude
+  if (fn < (g_mag - g_tol) || fn > (g_mag + g_tol)) return false;
+
+  // Normalised gravity direction in body frame
+  const Vec3 gb = f_b / std::max(1e-6f, fn);
+
+  // Roll and pitch from gravity (yaw unobservable without compass)
+  const float roll  = std::atan2(gb.y(), gb.z());
+  const float pitch = std::atan2(-gb.x(),
+                        std::sqrt(gb.y() * gb.y() + gb.z() * gb.z()));
+  const float yaw   = 0.0f;
+
+  // Build quaternion from Euler angles (ZYX / RPY convention)
+  const float cr = std::cos(roll  * 0.5f), sr = std::sin(roll  * 0.5f);
+  const float cp = std::cos(pitch * 0.5f), sp = std::sin(pitch * 0.5f);
+  const float cy = std::cos(yaw   * 0.5f), sy = std::sin(yaw   * 0.5f);
+
+  Quat q_WI;
+  q_WI.w() = cr * cp * cy + sr * sp * sy;
+  q_WI.x() = sr * cp * cy - cr * sp * sy;
+  q_WI.y() = cr * sp * cy + sr * cp * sy;
+  q_WI.z() = cr * cp * sy - sr * sp * cy;
+  q_WI.normalize();
+
+  // Preserve current extrinsics in the reset state
+  NominalState x0 = x_;
+  x0.q_WI = q_WI;
+
+  reset(x0, P0_diag, t0);
+  return true;
+}
+
 bool RioEskf::isInitialized() const { return initialized_; }
 float RioEskf::lastTime() const { return t_last_; }
 
@@ -110,7 +149,7 @@ void RioEskf::insPropagation(const ImuSample& s, float dt) {
   // Biases and extrinsics are unchanged (no propagation)
 }
 
-CorrectionResult RioEskf::correct(const RadarDoppler* meas, size_t n, const Vec3& w_nom) {
+CorrectionResult RioEskf::correct(const RadarDoppler* meas, size_t n, const ImuSample& s) {
   CorrectionResult res;
   res.n_total = n;
 
@@ -128,6 +167,7 @@ CorrectionResult RioEskf::correct(const RadarDoppler* meas, size_t n, const Vec3
     mu_r /= un;
 
     // Compute H (1x21) and h (predicted vr)
+    auto w_nom = s.gyr - x_.b_g;
     const Row21 H = computeRadarH_(mu_r, w_nom);
     const float h = computeRadarh_(mu_r, w_nom);
 
@@ -247,7 +287,7 @@ void RioEskf::updateStateEstimate(const Vec21& delta_x) {
   x_.q_IR = (x_.q_IR * dq_IR).normalized();
 }
 
-void RioEskf::advancePriorToPosteriror() {
+void RioEskf::advancePriorToPosterior() {
   P_hat_       = P_hat_prior_;
   delta_x_hat_ = delta_x_hat_prior_;
 }
