@@ -1,0 +1,13 @@
+{
+  "name": "rio-lib",
+  "version": "0.1.0",
+  "build": {
+    "srcDir": "src",
+    "includeDir": "include",
+    "flags": [
+      "-I.pio/libdeps/teensy41/ArduinoEigen/ArduinoEigen",
+      "-DRIO_EIGEN_DONT_VECTORIZE",
+      "-DRIO_EIGEN_DONT_ALIGN_STATICALLY"
+    ]
+  }
+}
