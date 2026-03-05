@@ -54,7 +54,7 @@ struct NominalState {
 struct CorrectionResult {
   size_t n_total    = 0;   // measurements received
   size_t n_accepted = 0;   // passed gating and used for update
-  size_t n_rejected = 0;   // failed gating (chi² too large)
+  size_t n_rejected = 0;   // failed gating (chi^2 too large)
   size_t n_skipped  = 0;   // skipped (zero-norm direction, S<=0, etc.)
 };
 
