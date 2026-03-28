@@ -57,7 +57,7 @@ bool RioEskf::initAttitudeFromGravity(const Vec3& f_b, const float* P0_diag,
   if (fn < (g_mag - g_tol) || fn > (g_mag + g_tol)) return false;
 
   // Normalised gravity direction in body frame
-  const Vec3 gb = f_b / std::max(1e-6f, fn);
+  const Vec3 gb = -f_b / std::max(1e-6f, fn);
 
   // Roll and pitch from gravity (yaw unobservable without compass)
   const float roll  = std::atan2(gb.y(), gb.z());
