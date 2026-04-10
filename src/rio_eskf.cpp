@@ -287,6 +287,18 @@ void RioEskf::updateStateEstimate(const Vec21& delta_x) {
   x_.q_IR = (x_.q_IR * dq_IR).normalized();
 }
 
+void RioEskf::setExtrinsics(const Vec3& p_IR, const Quat& q_IR) {
+  if (!initialized_) return;
+  x_.p_IR = p_IR;
+  x_.q_IR = q_IR.normalized();
+  // Zero the extrinsic slots of the accumulated error-state so that the new
+  // nominal values are the reference point and no stale correction is injected.
+  delta_x_hat_.segment<3>(15).setZero();
+  delta_x_hat_.segment<3>(18).setZero();
+  delta_x_hat_prior_.segment<3>(15).setZero();
+  delta_x_hat_prior_.segment<3>(18).setZero();
+}
+
 void RioEskf::advancePriorToPosterior() {
   P_hat_       = P_hat_prior_;
   delta_x_hat_ = delta_x_hat_prior_;

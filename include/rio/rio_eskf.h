@@ -86,6 +86,12 @@ public:
   const NominalState& getState() const;
   const Mat21& getCovariance() const;
 
+  /// Override the nominal extrinsics (p_IR, q_IR) directly from an external
+  /// source (e.g. a gimbal encoder).  Also zeroes the accumulated error-state
+  /// for the extrinsic DOFs so the new nominal values become the reference
+  /// point for the next correction step.
+  void setExtrinsics(const Vec3& p_IR, const Quat& q_IR);
+
   void predict(const ImuSample& s, float dt);
   void insPropagation(const ImuSample& s, float dt);
   CorrectionResult correct(const RadarDoppler* meas, size_t n, const ImuSample& s);
