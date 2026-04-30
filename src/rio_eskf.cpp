@@ -163,7 +163,8 @@ CorrectionResult RioEskf::correct(const RadarDoppler* meas, size_t n, const ImuS
   for (size_t i = 0; i < n; ++i) {
     Vec3 mu_r = meas[i].u_R;
     const float un = mu_r.norm();
-    if (un < 1e-6f) { res.n_skipped++; continue; }
+    // !(un >= ...) also rejects NaN (NaN < 1e-6f is false in IEEE 754).
+    if (!(un >= 1e-6f)) { res.n_skipped++; continue; }
     mu_r /= un;
 
     // Compute H (1x21) and h (predicted vr)
