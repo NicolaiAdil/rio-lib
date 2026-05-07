@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stddef.h>
+#include <stdint.h>
 #include "rio_types.h"
 
 namespace rio {
@@ -24,6 +25,8 @@ struct BarometerSample {
   float temp_c;
 };
 
+// Process-model and dynamics parameters only. Sensor sigmas / gating /
+// signs live on per-modality measurement classes (see measurements.h).
 struct Params {
   Vec3 g_W = Vec3(0, 0, -9.80665f);
 
@@ -40,21 +43,6 @@ struct Params {
 
   float min_dt = 1e-4f;
   float max_dt = 0.05f;
-
-  float sigma_vr = 0.1f;
-  bool  gating_enable = true;
-  float gate_nsigma = 3.0f;
-  float vr_sign = -1.0f;
-
-  // Differential barometer aiding (z only).
-  // sigma_baro_dz is the std-dev (m) of one Δz measurement (combines noise
-  // of two pressure samples and short-term local pressure disturbances).
-  float sigma_baro_dz       = 0.3f;
-  bool  baro_gating_enable  = true;
-  float baro_gate_nsigma    = 5.0f;
-  // Sign convention: world-frame z is "up" if g_W.z() < 0 (default), and
-  // increasing altitude increases p_WI.z(). Set to -1.0f if z is "down".
-  float baro_z_sign         = 1.0f;
 };
 
 struct NominalState {
@@ -67,25 +55,16 @@ struct NominalState {
   Quat q_IR = Quat::Identity();
 };
 
-struct CorrectionResult {
-  size_t n_total    = 0;   // measurements received
-  size_t n_accepted = 0;   // passed gating and used for update
-  size_t n_rejected = 0;   // failed gating (chi^2 too large)
-  size_t n_skipped  = 0;   // skipped (zero-norm direction, S<=0, etc.)
-};
+}  // namespace rio
 
-struct BaroCorrectionResult {
-  bool  initialized = false;  // anchor was just set on this call (no update)
-  bool  accepted    = false;
-  bool  rejected    = false;  // gating
-  bool  skipped     = false;  // bad data / not initialized
-  float dz_meas     = 0.0f;   // Δz from pressure (m)
-  float dz_pred     = 0.0f;   // Δz from state (m)
-  float residual    = 0.0f;
-};
+// Bring in the measurement interface (ScalarMeasurement, ScalarUpdate,
+// MeasurementContext) so callers only need rio_eskf.h.
+#include "measurements.h"
+
+namespace rio {
 
 // Error-state ordering:
-// δx = [ δp^n, δv^n, δb_acc^b, δθ_nb, δb_ars^b ]^T
+// δx = [ δp^n, δv^n, δb_acc^b, δθ_nb, δb_ars^b, δp_IR, δθ_IR ]^T
 class RioEskf {
 public:
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
@@ -97,11 +76,11 @@ public:
 
   void reset(const NominalState& x0, const float* P0_diag_21, float t0);
 
-  /// Attempt to initialize attitude from a gravity-aligned accelerometer reading.
+  /// Initialize attitude from a gravity-aligned accelerometer reading.
   /// @param f_b       Specific-force measurement in body frame (m/s²).
   /// @param P0_diag   Pointer to 21-element initial covariance diagonal.
   /// @param t0        Timestamp to seed the filter with.
-  /// @param g_tol     Allowed deviation of |f_b| from |g_W| (m/s²).  Default 0.8.
+  /// @param g_tol     Allowed deviation of |f_b| from |g_W| (m/s²).
   /// @return true if |f_b| was close enough to gravity and the filter was reset.
   bool initAttitudeFromGravity(const Vec3& f_b, const float* P0_diag, float t0,
                                float g_tol = 0.8f);
@@ -114,16 +93,20 @@ public:
 
   void predict(const ImuSample& s, float dt);
   void insPropagation(const ImuSample& s, float dt);
-  CorrectionResult correct(const RadarDoppler* meas, size_t n, const ImuSample& s);
-  BaroCorrectionResult correctBarometer(const BarometerSample& s);
-  void resetBarometer();
+
+  /// Apply one scalar measurement update. Generic over modality —
+  /// subclasses of ScalarMeasurement supply h, H, R via evaluate().
+  /// On reject/skip/not-ready, P_hat_ and δx are NOT touched; if the
+  /// caller wants P_hat_ snapped to the predicted prior (for diagnostics
+  /// after a batch with no accepts), call advancePriorToPosterior().
+  ScalarUpdate applyScalar(ScalarMeasurement& m,
+                           const MeasurementContext& ctx = {});
+
   void updateStateEstimate(const Vec21& delta_x);
   void advancePriorToPosterior();
 
 private:
   void scalarCorrect_(const Row21& H, float residual, float R);
-  Row21 computeRadarH_(const Vec3& mu_r, const Vec3& w_nom) const;
-  float computeRadarh_(const Vec3& mu_r, const Vec3& w_nom) const;
 
   const Mat21 generateA(Vec3 f_nom, Vec3 w_nom) const;
   const Mat21x12 generateE() const;
@@ -140,12 +123,6 @@ private:
   bool params_set_{false};
   bool initialized_{false};
   float t_last_{0.0f};
-
-  // Differential barometer anchor: pressure and state z at last accepted
-  // (or initializing) barometer reading.
-  bool  baro_has_prev_{false};
-  float baro_p_prev_{0.0f};
-  float baro_z_prev_{0.0f};
 };
 
 } // namespace rio

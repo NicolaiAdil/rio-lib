@@ -1,0 +1,147 @@
+// Per-modality scalar measurement implementations. Math kernels lifted
+// verbatim from the previous monolithic rio_eskf.cpp so behavior is
+// preserved bit-for-bit.
+
+#include "rio/measurements.h"
+#include "rio/rio_eskf.h"   // for NominalState, ImuSample, BarometerSample
+
+#include <cmath>
+
+namespace rio {
+namespace {
+
+// Radar Jacobian (1x21). Verbatim from old RioEskf::computeRadarH_.
+Row21 computeRadarH(const NominalState& x, const Vec3& mu_r, const Vec3& w_nom) {
+  const Mat3 R_WI = x.q_WI.toRotationMatrix();
+  const Mat3 R_IW = R_WI.transpose();
+  const Mat3 R_IR = x.q_IR.toRotationMatrix();
+  const Mat3 R_RI = R_IR.transpose();
+  const Vec3& p_IR = x.p_IR;
+
+  const Vec3 v_I = R_IW * x.v_WI;
+
+  Row21 H = Row21::Zero();
+
+  H.block<1,3>(0, 3)  = -(mu_r.transpose() * (R_RI * R_IW));
+  H.block<1,3>(0, 9)  = -(mu_r.transpose() * (R_RI * skew(v_I)));
+  H.block<1,3>(0, 12) = -(mu_r.transpose() * (R_RI * skew(p_IR)));
+  H.block<1,3>(0, 15) = -(mu_r.transpose() * R_RI) * skew(w_nom);
+
+  const Vec3 s_I     = v_I + skew(w_nom) * p_IR;
+  const Vec3 v_R_nom = R_RI * s_I;
+  H.block<1,3>(0, 18) = -(mu_r.transpose() * skew(v_R_nom));
+
+  return H;
+}
+
+// Predicted radial velocity. Verbatim from old RioEskf::computeRadarh_.
+float computeRadarh(const NominalState& x, const Vec3& mu_r, const Vec3& w_nom) {
+  const Mat3 R_WI = x.q_WI.toRotationMatrix();
+  const Mat3 R_IW = R_WI.transpose();
+  const Mat3 R_IR = x.q_IR.toRotationMatrix();
+  const Mat3 R_RI = R_IR.transpose();
+  const Vec3& p_IR = x.p_IR;
+
+  const Vec3 v_I  = R_IW * x.v_WI;
+  const Vec3 spin = w_nom.cross(p_IR);
+  const Vec3 v_R  = R_RI * (v_I + spin);
+  return -(mu_r.dot(v_R));
+}
+
+}  // namespace
+
+// ── RadarDopplerMeasurement ───────────────────────────────────────────────────
+
+ScalarMeasurement::Eval
+RadarDopplerMeasurement::evaluate(const NominalState& x,
+                                   const MeasurementContext& ctx,
+                                   Row21& H, float& e, float& R) {
+  if (!ctx.last_imu) return Eval::Skip;
+
+  Vec3 mu_r = u_R_;
+  const float un = mu_r.norm();
+  // !(un >= …) also rejects NaN.
+  if (!(un >= 1e-6f)) return Eval::Skip;
+  mu_r /= un;
+
+  const Vec3 w_nom = ctx.last_imu->gyr - x.b_g;
+
+  H = computeRadarH(x, mu_r, w_nom);
+  const float h = computeRadarh(x, mu_r, w_nom);
+  e = p_.vr_sign * vr_ - h;
+  R = p_.sigma_vr * p_.sigma_vr;
+  return Eval::Apply;
+}
+
+// ── BarometerDiffMeasurement ──────────────────────────────────────────────────
+
+void BarometerDiffMeasurement::setSample(const BarometerSample& s) {
+  has_pending_     = true;
+  pending_p_pa_    = s.pressure_pa;
+  pending_temp_c_  = s.temp_c;
+}
+
+void BarometerDiffMeasurement::resetAnchor() {
+  has_anchor_ = false;
+  p_prev_     = 0.f;
+  z_prev_     = 0.f;
+}
+
+ScalarMeasurement::Eval
+BarometerDiffMeasurement::evaluate(const NominalState& x,
+                                    const MeasurementContext& /*ctx*/,
+                                    Row21& H, float& e, float& R) {
+  // Reset per-call telemetry.
+  last_dz_meas_     = 0.f;
+  last_dz_pred_     = 0.f;
+  just_initialized_ = false;
+
+  if (!has_pending_) return Eval::NotReady;
+  // Consume pending sample.
+  has_pending_ = false;
+
+  if (!(pending_p_pa_ > 1.0f) || !std::isfinite(pending_p_pa_) ||
+      !std::isfinite(pending_temp_c_)) {
+    return Eval::Skip;
+  }
+
+  // Anchor on first valid reading; signal NotReady so caller knows there
+  // was no update this call (matches old "initialized=true, accepted=false").
+  if (!has_anchor_) {
+    has_anchor_       = true;
+    p_prev_           = pending_p_pa_;
+    z_prev_           = x.p_WI.z();
+    just_initialized_ = true;
+    return Eval::NotReady;
+  }
+
+  // Δz from pressure (hypsometric, with local temperature).
+  const float T_kelvin = pending_temp_c_ + 273.15f;
+  const float dz_baro  = differentialAltitude(p_prev_, pending_p_pa_, T_kelvin);
+  const float dz_meas  = p_.z_sign * dz_baro;
+
+  // Predicted Δz from current state. z_prev_ is a frozen snapshot of state
+  // z at last accept (or anchor init) — H only sees current state z.
+  const float dz_pred = x.p_WI.z() - z_prev_;
+
+  e = dz_meas - dz_pred;
+
+  H = Row21::Zero();
+  H(0, 2) = 1.0f;
+
+  R = p_.sigma_dz * p_.sigma_dz;
+
+  last_dz_meas_ = dz_meas;
+  last_dz_pred_ = dz_pred;
+  return Eval::Apply;
+}
+
+void BarometerDiffMeasurement::onAccepted(const NominalState& x_post) {
+  // Re-anchor to the pressure consumed in the last evaluate() and the
+  // posterior state z. evaluate() clears has_pending_ but leaves
+  // pending_p_pa_ holding the consumed value, so we can read it here.
+  p_prev_ = pending_p_pa_;
+  z_prev_ = x_post.p_WI.z();
+}
+
+}  // namespace rio
