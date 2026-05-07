@@ -18,6 +18,12 @@ struct RadarDoppler {
   float sigma;
 };
 
+struct BarometerSample {
+  float t;
+  float pressure_pa;
+  float temp_c;
+};
+
 struct Params {
   Vec3 g_W = Vec3(0, 0, -9.80665f);
 
@@ -39,6 +45,16 @@ struct Params {
   bool  gating_enable = true;
   float gate_nsigma = 3.0f;
   float vr_sign = -1.0f;
+
+  // Differential barometer aiding (z only).
+  // sigma_baro_dz is the std-dev (m) of one Δz measurement (combines noise
+  // of two pressure samples and short-term local pressure disturbances).
+  float sigma_baro_dz       = 0.3f;
+  bool  baro_gating_enable  = true;
+  float baro_gate_nsigma    = 5.0f;
+  // Sign convention: world-frame z is "up" if g_W.z() < 0 (default), and
+  // increasing altitude increases p_WI.z(). Set to -1.0f if z is "down".
+  float baro_z_sign         = 1.0f;
 };
 
 struct NominalState {
@@ -56,6 +72,16 @@ struct CorrectionResult {
   size_t n_accepted = 0;   // passed gating and used for update
   size_t n_rejected = 0;   // failed gating (chi^2 too large)
   size_t n_skipped  = 0;   // skipped (zero-norm direction, S<=0, etc.)
+};
+
+struct BaroCorrectionResult {
+  bool  initialized = false;  // anchor was just set on this call (no update)
+  bool  accepted    = false;
+  bool  rejected    = false;  // gating
+  bool  skipped     = false;  // bad data / not initialized
+  float dz_meas     = 0.0f;   // Δz from pressure (m)
+  float dz_pred     = 0.0f;   // Δz from state (m)
+  float residual    = 0.0f;
 };
 
 // Error-state ordering:
@@ -89,6 +115,8 @@ public:
   void predict(const ImuSample& s, float dt);
   void insPropagation(const ImuSample& s, float dt);
   CorrectionResult correct(const RadarDoppler* meas, size_t n, const ImuSample& s);
+  BaroCorrectionResult correctBarometer(const BarometerSample& s);
+  void resetBarometer();
   void updateStateEstimate(const Vec21& delta_x);
   void advancePriorToPosterior();
 
@@ -112,6 +140,12 @@ private:
   bool params_set_{false};
   bool initialized_{false};
   float t_last_{0.0f};
+
+  // Differential barometer anchor: pressure and state z at last accepted
+  // (or initializing) barometer reading.
+  bool  baro_has_prev_{false};
+  float baro_p_prev_{0.0f};
+  float baro_z_prev_{0.0f};
 };
 
 } // namespace rio

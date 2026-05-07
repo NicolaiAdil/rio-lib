@@ -35,6 +35,21 @@ inline Mat3 skew(const Vec3& v) {
   return S;
 }
 
+// Hypsometric formula for differential altitude given two pressure samples
+// taken at (approximately) the same temperature. Uses local temperature T,
+// so the result tracks the actual atmosphere better than ISA-with-T0=288.15K
+// would over a short interval.
+//
+//   Δh = (R · T / g) · ln(p_prev / p_curr)
+//
+// where T is in Kelvin. p_prev and p_curr in Pa (units cancel).
+inline float differentialAltitude(float p_prev_pa, float p_curr_pa,
+                                  float T_kelvin) {
+  constexpr float R_spec = 287.05f;
+  constexpr float g_std  = 9.80665f;
+  return (R_spec * T_kelvin / g_std) * logf(p_prev_pa / p_curr_pa);
+}
+
 inline Quat quatExpSmall(const Vec3& dtheta) {
   const float a2 = dtheta.squaredNorm();
   if (a2 < 1e-12f) {

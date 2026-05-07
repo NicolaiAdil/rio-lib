@@ -44,6 +44,8 @@ void RioEskf::reset(const NominalState& x0, const float* P0_diag_21, float t0) {
 
   initialized_ = true;
   t_last_ = t0;
+
+  // resetBarometer();
 }
 
 bool RioEskf::initAttitudeFromGravity(const Vec3& f_b, const float* P0_diag,
@@ -203,6 +205,79 @@ CorrectionResult RioEskf::correct(const RadarDoppler* meas, size_t n, const ImuS
   }
 
   return res;
+}
+
+BaroCorrectionResult RioEskf::correctBarometer(const BarometerSample& s) {
+  BaroCorrectionResult res;
+  if (!params_set_ || !initialized_)        { res.skipped = true; return res; }
+  if (!(s.pressure_pa > 1.0f) || !std::isfinite(s.pressure_pa) ||
+      !std::isfinite(s.temp_c)) {
+    res.skipped = true; return res;
+  }
+
+  // Anchor on first reading.
+  if (!baro_has_prev_) {
+    baro_has_prev_ = true;
+    baro_p_prev_   = s.pressure_pa;
+    baro_z_prev_   = x_.p_WI.z();
+    res.initialized = true;
+    return res;
+  }
+
+  // Δz from pressure using local temperature (hypsometric form).
+  // Ascending → p_curr < p_prev → ln(p_prev/p_curr) > 0 → Δh > 0.
+  const float T_kelvin = s.temp_c + 273.15f;
+  const float dz_baro  = differentialAltitude(baro_p_prev_, s.pressure_pa, T_kelvin);
+  const float dz_meas  = params_.baro_z_sign * dz_baro;
+
+  // Predicted Δz from state. baro_z_prev_ is a frozen snapshot of the
+  // previous corrected p_WI.z(); the measurement's H only sees current z.
+  const float dz_pred = x_.p_WI.z() - baro_z_prev_;
+
+  const float e = dz_meas - dz_pred;
+
+  // Jacobian: H = ∂(z_curr - z_prev_const) / ∂x = e_z over the position block.
+  Row21 H = Row21::Zero();
+  H(0, 2) = 1.0f;
+
+  const float R_meas = params_.sigma_baro_dz * params_.sigma_baro_dz;
+
+  // Gating
+  const float S = (H * P_hat_prior_ * H.transpose())(0, 0) + R_meas;
+  if (!(S > 0.0f)) { res.skipped = true; return res; }
+  if (params_.baro_gating_enable) {
+    const float gate_thresh = params_.baro_gate_nsigma * params_.baro_gate_nsigma;
+    if ((e * e) / S > gate_thresh) {
+      res.rejected = true;
+      res.dz_meas  = dz_meas;
+      res.dz_pred  = dz_pred;
+      res.residual = e;
+      return res;
+    }
+  }
+
+  scalarCorrect_(H, e, R_meas);
+  updateStateEstimate(delta_x_hat_);
+
+  // Carry posterior into prior for subsequent corrections.
+  P_hat_prior_       = P_hat_;
+  delta_x_hat_prior_ = delta_x_hat_;
+
+  // Re-anchor to the corrected state for the next differential.
+  baro_p_prev_ = s.pressure_pa;
+  baro_z_prev_ = x_.p_WI.z();
+
+  res.accepted = true;
+  res.dz_meas  = dz_meas;
+  res.dz_pred  = dz_pred;
+  res.residual = e;
+  return res;
+}
+
+void RioEskf::resetBarometer() {
+  baro_has_prev_ = false;
+  baro_p_prev_   = 0.0f;
+  baro_z_prev_   = 0.0f;
 }
 
 void RioEskf::scalarCorrect_(const Row21& H, float residual, float R) {
