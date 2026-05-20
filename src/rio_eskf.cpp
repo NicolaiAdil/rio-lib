@@ -162,14 +162,17 @@ ScalarUpdate RioEskf::applyScalar(ScalarMeasurement& m,
   u.residual = e;
   u.S        = S;
 
-  if (!(S > 0.0f)) {
-    u.status = ScalarUpdate::Skipped;
+  // Positive-test guards: catch NaN/Inf (any comparison with NaN is false,
+  // so a NaN residual would otherwise sneak past the chi-square gate and
+  // poison the state).
+  if (!(S > 0.0f) || !isfinite(e)) {
+    u.status = ScalarUpdate::Rejected;
     return u;
   }
 
   if (m.gatingEnabled()) {
     const float gate_thresh = m.gateNSigma() * m.gateNSigma();
-    if (e * e / S > gate_thresh) {
+    if (!(e * e / S <= gate_thresh)) {
       u.status = ScalarUpdate::Rejected;
       return u;
     }
