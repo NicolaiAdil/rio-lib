@@ -143,9 +143,16 @@ ScalarUpdate RioEskf::applyScalar(ScalarMeasurement& m,
     return u;
   }
 
+  // Patch ctx with a pointer to the prior covariance so measurements that
+  // want to compute a second-order underweighting term B = ½ tr(H_xx P H_xx P)
+  // can read P without a side channel. MeasurementContext is a small value
+  // type; copy and override locally.
+  MeasurementContext ctx_local = ctx;
+  ctx_local.P_prior = &P_hat_prior_;
+
   Row21 H;
   float e = 0.f, R = 0.f;
-  const ScalarMeasurement::Eval ev = m.evaluate(x_, ctx, H, e, R);
+  const ScalarMeasurement::Eval ev = m.evaluate(x_, ctx_local, H, e, R);
 
   if (ev == ScalarMeasurement::Eval::NotReady) {
     u.status = ScalarUpdate::NotReady;
@@ -156,11 +163,18 @@ ScalarUpdate RioEskf::applyScalar(ScalarMeasurement& m,
     return u;
   }
 
+  // Second-order underweighting (§5.2.3 of NavFilter Best Practices):
+  //   S = H P H^T + R + B,   B = ½ tr(H_xx P H_xx P).
+  // Default ScalarMeasurement::computeB returns 0, so non-underweighted
+  // measurements get the conventional S = H P H^T + R behavior.
+  const float B = m.computeB(x_, ctx_local);
+
   // Innovation variance is computed before gating; record it in u
   // unconditionally so callers can log even on rejects/skips.
-  const float S = (H * P_hat_prior_ * H.transpose())(0, 0) + R;
+  const float S = (H * P_hat_prior_ * H.transpose())(0, 0) + R + B;
   u.residual = e;
   u.S        = S;
+  u.B        = B;
 
   // Positive-test guards: catch NaN/Inf (any comparison with NaN is false,
   // so a NaN residual would otherwise sneak past the chi-square gate and
@@ -178,8 +192,10 @@ ScalarUpdate RioEskf::applyScalar(ScalarMeasurement& m,
     }
   }
 
-  // Joseph scalar update — uses P_hat_prior_, writes P_hat_.
-  scalarCorrect_(H, e, R);
+  // Joseph scalar update — uses P_hat_prior_, writes P_hat_. The effective
+  // measurement noise is R + B so the gain and Joseph form are consistent
+  // with the inflated S used for gating.
+  scalarCorrect_(H, e, R + B);
   updateStateEstimate(delta_x_hat_);
 
   // Carry posterior into prior so a subsequent applyScalar (e.g. next radar
