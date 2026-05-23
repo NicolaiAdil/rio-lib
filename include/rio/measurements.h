@@ -113,16 +113,23 @@ private:
   float  vr_;
 };
 
-// Barometer scalar measurement. Persistent instance — holds the
-// (p_prev, z_prev) anchor across calls. Two modes, selected via
-// Params::reset_anchor_on_accept:
-//   true  (default): differential. Anchor is reset to (pending_p, x_post.z)
+// Barometer scalar measurement implementing the BRIO barometric
+// factor (Eq. 11 of Girod et al., arXiv:2408.05764). Absolute
+// altitude is computed from pressure via the NASA atmosphere model
+// (Eq. 12, see pressureToAltitude in rio_types.h); the constant
+// bias z_p^0 is folded into an altitude anchor captured on the
+// first valid reading.
+//
+// Persistent instance — holds the (z_baro_anchor, z_state_anchor)
+// across calls. Two modes, selected via Params::reset_anchor_on_accept:
+//   true  (default): differential. Anchor is reset to (z_baro_i, x_post.z)
 //                    after every accepted update — measurement constrains
 //                    Δz between consecutive samples.
-//   false:           absolute. Anchor is set once on the first valid reading
-//                    (typically right after attitude init, when x.z ≈ 0)
-//                    and never moves — measurement constrains x.z against the
-//                    boot-time pressure reference.
+//   false:           absolute (BRIO default). Anchor is set once on the
+//                    first valid reading (typically right after attitude
+//                    init, when x.z ≈ 0) and never moves — measurement
+//                    constrains x.z against the boot-time altitude
+//                    reference.
 class BarometerDiffMeasurement : public ScalarMeasurement {
 public:
   struct Params {
@@ -161,10 +168,18 @@ private:
   float  pending_p_pa_    = 0.f;
   float  pending_temp_c_  = 0.f;
 
-  // Differential anchor.
+  // Anchor: absolute altitude (m, NASA atmosphere model) at the first
+  // pressure reading, and the nominal state z at that time. Held
+  // constant in absolute mode; re-anchored after each accept in
+  // differential mode.
   bool   has_anchor_      = false;
-  float  p_prev_          = 0.f;
-  float  z_prev_          = 0.f;
+  float  z_baro_anchor_   = 0.f;
+  float  z_state_anchor_  = 0.f;
+
+  // Cached absolute altitude for the pending pressure sample,
+  // computed once in evaluate() and reused in onAccepted() to
+  // re-anchor without recomputing pressureToAltitude.
+  float  pending_z_baro_  = 0.f;
 
   // Telemetry from last evaluate().
   float  last_dz_meas_    = 0.f;

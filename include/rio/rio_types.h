@@ -50,6 +50,19 @@ inline float differentialAltitude(float p_prev_pa, float p_curr_pa,
   return (R_spec * T_kelvin / g_std) * logf(p_prev_pa / p_curr_pa);
 }
 
+// NASA Earth Atmosphere Model (Troposphere; valid up to ~11 km) —
+// absolute pressure (Pa) → altitude (m) using fixed ISA constants
+// rather than the locally measured temperature. Eq. 12 of Girod et
+// al., "A robust baro-radar-inertial odometry m-estimator",
+// arXiv:2408.05764. Used by the BRIO barometric factor: anchor on
+// the first reading, then the residual measures state z against
+// (z_baro_i − z_baro_anchor), independent of the sensor's reported
+// temperature.
+inline float pressureToAltitude(float p_pa) {
+  return (288.08f * powf(p_pa / 101290.0f, 1.0f / 5.256f)
+          - 273.1f - 15.04f) / -0.00649f;
+}
+
 inline Quat quatExpSmall(const Vec3& dtheta) {
   const float a2 = dtheta.squaredNorm();
   if (a2 < 1e-12f) {

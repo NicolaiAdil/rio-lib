@@ -179,9 +179,9 @@ void BarometerDiffMeasurement::setSample(const BarometerSample& s) {
 }
 
 void BarometerDiffMeasurement::resetAnchor() {
-  has_anchor_ = false;
-  p_prev_     = 0.f;
-  z_prev_     = 0.f;
+  has_anchor_     = false;
+  z_baro_anchor_  = 0.f;
+  z_state_anchor_ = 0.f;
 }
 
 ScalarMeasurement::Eval
@@ -206,20 +206,25 @@ BarometerDiffMeasurement::evaluate(const NominalState& x,
   // was no update this call (matches old "initialized=true, accepted=false").
   if (!has_anchor_) {
     has_anchor_       = true;
-    p_prev_           = pending_p_pa_;
-    z_prev_           = x.p_WI.z();
+    z_baro_anchor_    = pressureToAltitude(pending_p_pa_);
+    z_state_anchor_   = x.p_WI.z();
     just_initialized_ = true;
     return Eval::NotReady;
   }
 
-  // Δz from pressure (hypsometric, with local temperature).
-  const float T_kelvin = pending_temp_c_ + 273.15f;
-  const float dz_baro  = differentialAltitude(p_prev_, pending_p_pa_, T_kelvin);
-  const float dz_meas  = p_.z_sign * dz_baro;
+  // Absolute altitude from current pressure (BRIO Eq. 12, NASA
+  // atmosphere model). The constant bias z_p^0 from Eq. 11 is folded
+  // into z_baro_anchor_; the residual below differs only in sign from
+  // the paper's r_B = h(x) + z_p^0 − z_p^i (and the Jacobian's sign
+  // matches, so the Kalman gain converges identically).
+  const float z_baro_i = pressureToAltitude(pending_p_pa_);
+  pending_z_baro_      = z_baro_i;
+  const float dz_meas  = p_.z_sign * (z_baro_i - z_baro_anchor_);
 
-  // Predicted Δz from current state. z_prev_ is a frozen snapshot of state
-  // z at last accept (or anchor init) — H only sees current state z.
-  const float dz_pred = x.p_WI.z() - z_prev_;
+  // Predicted Δz from current state. z_state_anchor_ is a frozen
+  // snapshot of state z at last accept (or anchor init) — H only sees
+  // current state z.
+  const float dz_pred = x.p_WI.z() - z_state_anchor_;
 
   e = dz_meas - dz_pred;
 
@@ -234,15 +239,14 @@ BarometerDiffMeasurement::evaluate(const NominalState& x,
 }
 
 void BarometerDiffMeasurement::onAccepted(const NominalState& x_post) {
-  // Differential mode (default): re-anchor to the pressure consumed in the
-  // last evaluate() and the posterior state z. evaluate() clears
-  // has_pending_ but leaves pending_p_pa_ holding the consumed value, so we
-  // can read it here.
-  // Absolute mode: leave the anchor at its boot-time value so each
-  // measurement constrains x.z against the same reference.
+  // Differential mode (default): re-anchor to the altitude consumed in
+  // the last evaluate() (cached in pending_z_baro_) and the posterior
+  // state z.
+  // Absolute mode (BRIO default): leave the anchor at its boot-time
+  // value so each measurement constrains x.z against the same z_p^0.
   if (!p_.reset_anchor_on_accept) return;
-  p_prev_ = pending_p_pa_;
-  z_prev_ = x_post.p_WI.z();
+  z_baro_anchor_  = pending_z_baro_;
+  z_state_anchor_ = x_post.p_WI.z();
 }
 
 }  // namespace rio
