@@ -25,8 +25,8 @@ struct BarometerSample {
   float temp_c;
 };
 
-// Process-model and dynamics parameters only. Sensor sigmas / gating /
-// signs live on per-modality measurement classes (see measurements.h).
+// Process-model and dynamics parameters. Sensor sigmas / gating / signs
+// live on per-modality measurement classes.
 struct Params {
   Vec3 g_W = Vec3(0, 0, -9.80665f);
 
@@ -55,11 +55,16 @@ struct NominalState {
   Quat q_IR = Quat::Identity();
 };
 
+// Apply a scalar perturbation eps along error-state axis i ∈ [0,21) to x.
+// w_nom (cached gyr − b_g) is updated in lockstep when i lands in the
+// gyro-bias block so downstream Jacobians see a consistent (gyr − b_g).
+// Per-axis counterpart to RioEskf::updateStateEstimate — both encode the
+// 21-dim error-state layout documented above RioEskf.
+void perturbErrorState(NominalState& x, Vec3& w_nom, int i, float eps);
+
 }  // namespace rio
 
-// Bring in the measurement interface (ScalarMeasurement, ScalarUpdate,
-// MeasurementContext) so callers only need rio_eskf.h.
-#include "measurements.h"
+#include "measurement.h"
 
 namespace rio {
 
@@ -77,11 +82,7 @@ public:
   void reset(const NominalState& x0, const float* P0_diag_21, float t0);
 
   /// Initialize attitude from a gravity-aligned accelerometer reading.
-  /// @param f_b       Specific-force measurement in body frame (m/s²).
-  /// @param P0_diag   Pointer to 21-element initial covariance diagonal.
-  /// @param t0        Timestamp to seed the filter with.
-  /// @param g_tol     Allowed deviation of |f_b| from |g_W| (m/s²).
-  /// @return true if |f_b| was close enough to gravity and the filter was reset.
+  /// @param g_tol Allowed deviation of |f_b| from |g_W| (m/s²).
   bool initAttitudeFromGravity(const Vec3& f_b, const float* P0_diag, float t0,
                                float g_tol = 0.8f);
 
@@ -94,13 +95,12 @@ public:
   void predict(const ImuSample& s, float dt);
   void insPropagation(const ImuSample& s, float dt);
 
-  /// Apply one scalar measurement update. Generic over modality —
-  /// subclasses of ScalarMeasurement supply h, H, R via evaluate().
-  /// On reject/skip/not-ready, P_hat_ and δx are NOT touched; if the
-  /// caller wants P_hat_ snapped to the predicted prior (for diagnostics
-  /// after a batch with no accepts), call advancePriorToPosterior().
-  ScalarUpdate applyScalar(ScalarMeasurement& m,
-                           const MeasurementContext& ctx = {});
+  /// Apply one measurement update. Dispatch is by runtime type of `m`
+  /// (virtual evaluate/computeB/onAccepted). If gating/skip/not-ready
+  /// fires, P and δx are unchanged — call advancePriorToPosterior() to
+  /// snap P_hat_ to the predicted prior.
+  MeasurementUpdate correct(Measurement& m,
+                            const MeasurementContext& ctx = {});
 
   void updateStateEstimate(const Vec21& delta_x);
   void advancePriorToPosterior();

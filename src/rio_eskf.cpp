@@ -1,4 +1,3 @@
-// src/rio_eskf.cpp
 #include "rio/rio_eskf.h"
 
 namespace rio {
@@ -9,8 +8,7 @@ void RioEskf::setParams(const Params& p) {
   params_ = p;
   params_.q_IR.normalize();
 
-  // Build continuous-time process noise covariance Q (12x12 diagonal).
-  // Column ordering matches generateE: [acc, ba, gyr, bg]
+  // Q column ordering matches generateE: [acc, ba, gyr, bg].
   const float sa2  = params_.sigma_acc * params_.sigma_acc;
   const float sba2 = params_.sigma_ba  * params_.sigma_ba;
   const float sg2  = params_.sigma_gyr * params_.sigma_gyr;
@@ -50,7 +48,7 @@ bool RioEskf::initAttitudeFromGravity(const Vec3& f_b, const float* P0_diag,
                                        float t0, float g_tol) {
   if (!params_set_) return false;
 
-  const float g_mag = params_.g_W.norm();        // expected ~9.81
+  const float g_mag = params_.g_W.norm();
   const float fn    = f_b.norm();
 
   if (fn < (g_mag - g_tol) || fn > (g_mag + g_tol)) return false;
@@ -134,95 +132,80 @@ void RioEskf::insPropagation(const ImuSample& s, float dt) {
   x_.q_WI = (x_.q_WI * dq).normalized();
 }
 
-ScalarUpdate RioEskf::applyScalar(ScalarMeasurement& m,
-                                   const MeasurementContext& ctx) {
-  ScalarUpdate u;
+MeasurementUpdate RioEskf::correct(Measurement& m,
+                                    const MeasurementContext& ctx) {
+  MeasurementUpdate u;
 
   if (!params_set_ || !initialized_) {
-    u.status = ScalarUpdate::Skipped;
+    u.status = MeasurementUpdate::Skipped;
     return u;
   }
 
-  // Patch ctx with a pointer to the prior covariance so measurements that
-  // want to compute a second-order underweighting term B = ½ tr(H_xx P H_xx P)
-  // can read P without a side channel. MeasurementContext is a small value
-  // type; copy and override locally.
+  // Expose P_prior so measurements can compute second-order terms.
   MeasurementContext ctx_local = ctx;
   ctx_local.P_prior = &P_hat_prior_;
 
   Row21 H;
   float e = 0.f, R = 0.f;
-  const ScalarMeasurement::Eval ev = m.evaluate(x_, ctx_local, H, e, R);
+  const Measurement::Eval ev = m.evaluate(x_, ctx_local, H, e, R);
 
-  if (ev == ScalarMeasurement::Eval::NotReady) {
-    u.status = ScalarUpdate::NotReady;
+  if (ev == Measurement::Eval::NotReady) {
+    u.status = MeasurementUpdate::NotReady;
     return u;
   }
-  if (ev == ScalarMeasurement::Eval::Skip) {
-    u.status = ScalarUpdate::Skipped;
+  if (ev == Measurement::Eval::Skip) {
+    u.status = MeasurementUpdate::Skipped;
     return u;
   }
 
-  // Second-order underweighting (§5.2.3 of NavFilter Best Practices):
-  //   S = H P H^T + R + B,   B = ½ tr(H_xx P H_xx P).
-  // Default ScalarMeasurement::computeB returns 0, so non-underweighted
-  // measurements get the conventional S = H P H^T + R behavior.
   const float B = m.computeB(x_, ctx_local);
 
-  // Innovation variance is computed before gating; record it in u
-  // unconditionally so callers can log even on rejects/skips.
+  // Record S unconditionally so callers can log rejects/skips too.
   const float S = (H * P_hat_prior_ * H.transpose())(0, 0) + R + B;
   u.residual = e;
   u.S        = S;
   u.B        = B;
 
-  // Positive-test guards: catch NaN/Inf (any comparison with NaN is false,
-  // so a NaN residual would otherwise sneak past the chi-square gate and
-  // poison the state).
+  // !(S>0) and !isfinite(e) catch NaN — a NaN residual would otherwise
+  // sneak past the chi-square gate and poison the state.
   if (!(S > 0.0f) || !isfinite(e)) {
-    u.status = ScalarUpdate::Rejected;
+    u.status = MeasurementUpdate::Rejected;
     return u;
   }
 
   if (m.gatingEnabled()) {
     const float gate_thresh = m.gateNSigma() * m.gateNSigma();
     if (!(e * e / S <= gate_thresh)) {
-      u.status = ScalarUpdate::Rejected;
+      u.status = MeasurementUpdate::Rejected;
       return u;
     }
   }
 
-  // Joseph scalar update — uses P_hat_prior_, writes P_hat_. The effective
-  // measurement noise is R + B so the gain and Joseph form are consistent
-  // with the inflated S used for gating.
+  // Joseph update with effective noise R+B (consistent with the gating S).
   scalarCorrect_(H, e, R + B);
   updateStateEstimate(delta_x_hat_);
 
-  // Carry posterior into prior so a subsequent applyScalar (e.g. next radar
+  // Carry posterior into prior so the next correct() (e.g. next radar
   // point in the batch) sees the latest covariance.
   P_hat_prior_       = P_hat_;
   delta_x_hat_prior_ = delta_x_hat_;
 
   m.onAccepted(x_);
 
-  u.status = ScalarUpdate::Accepted;
+  u.status = MeasurementUpdate::Accepted;
   return u;
 }
 
 void RioEskf::scalarCorrect_(const Row21& H, float residual, float R) {
-  // S = H P H^T + R
   const float S = (H * P_hat_prior_ * H.transpose())(0, 0) + R;
   if (!(S > 1e-12f)) return;
   const float invS = 1.0f / S;
 
-  // K = P_prior * H^T * S^{-1}
   const Vec21 PHt = P_hat_prior_ * H.transpose();
   const Vec21 K   = PHt * invS;
 
-  // Error-state update: δx = K * e
   delta_x_hat_ = K * residual;
 
-  // Covariance update (Joseph form):
   const Mat21 IKH = Mat21::Identity() - K * H;
   P_hat_ = IKH * P_hat_prior_ * IKH.transpose() + (K * K.transpose()) * R;
   P_hat_ = 0.5f * (P_hat_ + P_hat_.transpose());
@@ -242,6 +225,29 @@ void RioEskf::updateStateEstimate(const Vec21& delta_x) {
   const Vec3 dth_IR = delta_x.segment<3>(18);
   const Quat dq_IR = quatExpSmall(dth_IR);
   x_.q_IR = (x_.q_IR * dq_IR).normalized();
+}
+
+void perturbErrorState(NominalState& x, Vec3& w_nom, int i, float eps) {
+  if (i < 3) {
+    x.p_WI[i] += eps;
+  } else if (i < 6) {
+    x.v_WI[i - 3] += eps;
+  } else if (i < 9) {
+    x.b_a[i - 6] += eps;
+  } else if (i < 12) {
+    Vec3 dtheta = Vec3::Zero();
+    dtheta[i - 9] = eps;
+    x.q_WI = (x.q_WI * quatExpSmall(dtheta)).normalized();
+  } else if (i < 15) {
+    x.b_g[i - 12] += eps;
+    w_nom[i - 12] -= eps;
+  } else if (i < 18) {
+    x.p_IR[i - 15] += eps;
+  } else {
+    Vec3 dtheta = Vec3::Zero();
+    dtheta[i - 18] = eps;
+    x.q_IR = (x.q_IR * quatExpSmall(dtheta)).normalized();
+  }
 }
 
 void RioEskf::advancePriorToPosterior() {

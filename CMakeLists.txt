@@ -6,7 +6,8 @@ option(RIO_USE_SYSTEM_EIGEN "Prefer system Eigen3 if available" ON)
 
 add_library(rio_eskf_cpp
   src/rio_eskf.cpp
-  src/measurements.cpp
+  src/measurements/radar_doppler.cpp
+  src/measurements/barometer.cpp
 )
 
 add_library(rio::rio_eskf_cpp ALIAS rio_eskf_cpp)

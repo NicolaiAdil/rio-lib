@@ -1,0 +1,2 @@
+/usr/bin/ar qc librio_eskf_cpp.a CMakeFiles/rio_eskf_cpp.dir/src/rio_eskf.cpp.o CMakeFiles/rio_eskf_cpp.dir/src/measurements/radar_doppler.cpp.o CMakeFiles/rio_eskf_cpp.dir/src/measurements/barometer.cpp.o
+/usr/bin/ranlib librio_eskf_cpp.a
